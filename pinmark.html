@@ -998,15 +998,15 @@
     <div class="about-overlay" id="aboutOverlay" hidden>
         <div class="about-dialog">
             <h2>📌 PinMark 原型钉</h2>
-            <p class="about-version">v1.2.0 · 2026-06-03</p>
+            <p class="about-version">v1.3.0 · 2026-06-08</p>
             <h3>更新日志</h3>
             <ul>
-                <li>修复标注创建后误触发点击冲突</li>
-                <li>修复页面滚动时标注位置不同步（内层滚动容器）</li>
-                <li>修复 overlay 误检测（grid-menu 等非遮罩元素）</li>
-                <li>修复 sticky 元素误触发固定定位模式</li>
-                <li>新增「逻辑」标注类型</li>
-                <li>新增关于弹窗</li>
+                <li>修复长页面滚动后标注数字停留在屏幕固定位置的问题</li>
+                <li>修复弹窗、遮罩、抽屉等浮层场景下标注串层的问题</li>
+                <li>优化多步骤、多 Tab、多页面原型的上下文识别</li>
+                <li>修复输入区、确认生成按钮、底部固定操作栏等区域标注不可见的问题</li>
+                <li>修复普通内容区 grid-menu 被误判为浮层的问题</li>
+                <li>同步优化导出的研发标注版 HTML 标注显示规则</li>
             </ul>
             <h3>作者</h3>
             <p class="about-author">猴子哥 · <a href="https://xhslink.com/m/x9xSa9yCMC" target="_blank" rel="noopener">📕 小红书</a> · <a href="https://github.com/wsrongjie/pinMark" target="_blank" rel="noopener">🐙 GitHub</a></p>
@@ -1288,7 +1288,10 @@
                 return note;
             }
 
+            const layout = annotationLayout(note);
             const isViewport = note.positionMode === "viewport";
+            note.x = isViewport ? layout.viewportX : layout.docX;
+            note.y = isViewport ? layout.viewportY : layout.docY;
             note.anchorRect = {
                 left: rect.left + (isViewport ? 0 : win.scrollX),
                 top: rect.top + (isViewport ? 0 : win.scrollY),
@@ -1503,17 +1506,12 @@
                 const storedHeight = Number(storedRect.height);
 
                 const validStored = Number.isFinite(storedLeft) && Number.isFinite(storedTop) && storedWidth > 0 && storedHeight > 0;
-                const anchorRectMode = note.anchorRectMode || "document";
-                const storedViewportLeft = anchorRectMode === "viewport" ? storedLeft : storedLeft - Number(note.anchorScrollX || 0);
-                const storedViewportTop = anchorRectMode === "viewport" ? storedTop : storedTop - Number(note.anchorScrollY || 0);
-                const storedPointX = note.positionMode === "viewport" ? x : x - Number(note.anchorScrollX || window.scrollX || 0);
-                const storedPointY = note.positionMode === "viewport" ? y : y - Number(note.anchorScrollY || window.scrollY || 0);
-                const relX = validStored ? (storedPointX - storedViewportLeft) / storedWidth : 0.5;
-                const relY = validStored ? (storedPointY - storedViewportTop) / storedHeight : 0.5;
-                const clampedX = Math.max(0, Math.min(1, relX));
-                const clampedY = Math.max(0, Math.min(1, relY));
-                const viewportX = rect.left + rect.width * clampedX;
-                const viewportY = rect.top + rect.height * clampedY;
+                const relX = validStored ? (x - storedLeft) / storedWidth : 0.5;
+                const relY = validStored ? (y - storedTop) / storedHeight : 0.5;
+                const layoutX = note.shape === "rect" ? relX : Math.max(0, Math.min(1, relX));
+                const layoutY = note.shape === "rect" ? relY : Math.max(0, Math.min(1, relY));
+                const viewportX = rect.left + rect.width * layoutX;
+                const viewportY = rect.top + rect.height * layoutY;
 
                 return {
                     docX: viewportX + window.scrollX,
@@ -1531,6 +1529,32 @@
                     x: layout.viewportX,
                     y: layout.viewportY
                 };
+            }
+
+            function noteBoxSize(note, layout) {
+                const storedRect = note.anchorRect || {};
+                const storedWidth = Number(storedRect.width);
+                const storedHeight = Number(storedRect.height);
+                const scaleX = storedWidth > 0 && layout.sourceRect ? layout.sourceRect.width / storedWidth : 1;
+                const scaleY = storedHeight > 0 && layout.sourceRect ? layout.sourceRect.height / storedHeight : 1;
+                return {
+                    width: Math.max(0, Number(note.width || 0) * scaleX),
+                    height: Math.max(0, Number(note.height || 0) * scaleY)
+                };
+            }
+
+            function hitTestPoint(note) {
+                const layout = noteLayout(note);
+                const point = {
+                    x: layout.viewportX,
+                    y: layout.viewportY
+                };
+                if (note.shape === "rect") {
+                    const size = noteBoxSize(note, layout);
+                    point.x += size.width / 2;
+                    point.y += size.height / 2;
+                }
+                return point;
             }
 
             function cssPathForElement(element) {
@@ -1570,25 +1594,32 @@
                 if (!element || element === document.body || element === document.documentElement || isAnnotationExportNode(element)) {
                     return false;
                 }
-                const style = window.getComputedStyle(element);
                 const role = (element.getAttribute("role") || "").toLowerCase();
+                const className = typeof element.className === "string" ? element.className : (element.getAttribute("class") || "");
                 const name = [
                     element.id || "",
-                    element.className || "",
+                    className,
                     role,
                     element.getAttribute("aria-label") || "",
                     element.getAttribute("data-state") || ""
                 ].join(" ").toLowerCase();
-                const zIndex = Number.parseInt(style.zIndex, 10);
-                const rect = element.getBoundingClientRect();
-                const isOverlayName = /(^|[\s_])(modal|dialog|drawer|popup|popover|overlay|mask|shade|sheet|layer|toast|tooltip|dropdown|backdrop|scrim)(-|[\s_]|$)/.test(name);
-                const isOverlayRole = /dialog|alertdialog|menu|listbox/.test(role);
-                const isOverlayPosition = (style.position === "fixed" || style.position === "absolute" || style.position === "sticky") &&
-                    Number.isFinite(zIndex) &&
-                    zIndex >= 20 &&
-                    rect.width >= window.innerWidth * 0.18 &&
-                    rect.height >= window.innerHeight * 0.14;
-                return element.tagName === "DIALOG" || element.getAttribute("aria-modal") === "true" || element.hasAttribute("popover") || isOverlayName || isOverlayRole || isOverlayPosition;
+                const isOverlayName = /(^|[\s_-])(modal|dialog|drawer|popup|popover|dropdown|backdrop|scrim|mask|sheet)([\s_-]|$)/.test(name);
+                const isFloatingMenuName = /(^|[\s_-])(menu|listbox)([\s_-]|$)/.test(name);
+                const isGenericOverlayName = /(^|[\s_-])(overlay|shade|ov)([\s_-]|$)/.test(name);
+                const isOverlayRole = ["dialog", "alertdialog", "menu", "listbox"].includes(role);
+                if (element.tagName === "DIALOG" || element.getAttribute("aria-modal") === "true" || element.hasAttribute("popover") || isOverlayName || isOverlayRole) {
+                    return true;
+                }
+                if (isGenericOverlayName || isFloatingMenuName) {
+                    const style = window.getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return (style.position === "fixed" || style.position === "absolute" || style.position === "sticky") &&
+                        (isFloatingMenuName || (
+                            rect.width >= window.innerWidth * 0.5 &&
+                            rect.height >= window.innerHeight * 0.5
+                        ));
+                }
+                return false;
             }
 
             function overlayRootForElement(element) {
@@ -1649,6 +1680,22 @@
                 return overlayContextForRoot(currentOverlayRoot());
             }
 
+            function overlayContextFromPath(context) {
+                if (!context || !context.path) {
+                    return null;
+                }
+                let root = null;
+                try {
+                    root = document.querySelector(context.path);
+                } catch (error) {
+                    root = null;
+                }
+                if (!root || !isOverlayCandidate(root) || !isElementVisible(root)) {
+                    return null;
+                }
+                return overlayContextForRoot(root);
+            }
+
             function overlayContextMatches(expected, current) {
                 if (!expected) {
                     return !current;
@@ -1663,13 +1710,21 @@
             }
 
             function pageContextOverlayMatches(context) {
-                const current = currentOverlayContext();
                 if (!context) {
-                    return !current;
+                    return !currentOverlayContext();
                 }
                 if (Object.prototype.hasOwnProperty.call(context, "overlay")) {
-                    return overlayContextMatches(context.overlay || null, current);
+                    const expected = context.overlay || null;
+                    if (!expected) {
+                        return !currentOverlayContext();
+                    }
+                    const direct = overlayContextFromPath(expected);
+                    if (direct && overlayContextMatches(expected, direct)) {
+                        return true;
+                    }
+                    return overlayContextMatches(expected, currentOverlayContext());
                 }
+                const current = currentOverlayContext();
                 if (!current) {
                     return true;
                 }
@@ -1750,12 +1805,18 @@
             }
 
             function localContextForElement(element, pageRoot) {
-                if (!element || !pageRoot) {
+                if (!element || !pageRoot || element === document.body || element === document.documentElement) {
+                    return null;
+                }
+                if (element === pageRoot || (element.contains && element.contains(pageRoot))) {
+                    return null;
+                }
+                if (!pageRoot.contains(element) && hasFixedAncestor(element)) {
                     return null;
                 }
                 let node = element;
                 let best = element;
-                while (node && node.nodeType === 1 && node !== document.documentElement) {
+                while (node && node.nodeType === 1 && node !== document.body && node !== document.documentElement) {
                     if (isAnnotationExportNode(node)) {
                         node = node.parentElement;
                         continue;
@@ -1768,20 +1829,155 @@
                     }
                     node = node.parentElement;
                 }
+                const path = cssPathForElement(best);
+                if (!path) {
+                    return null;
+                }
                 const fingerprint = visibleTextFingerprint(best);
                 return fingerprint ? {
-                    path: cssPathForElement(best),
+                    path,
                     fingerprint
                 } : null;
             }
 
+            function rootNameForElement(element) {
+                if (!element) {
+                    return "";
+                }
+                const role = (element.getAttribute("role") || "").toLowerCase();
+                return [
+                    element.id || "",
+                    typeof element.className === "string" ? element.className : (element.getAttribute("class") || ""),
+                    element.getAttribute("data-page") || "",
+                    element.getAttribute("data-screen") || "",
+                    element.getAttribute("data-view") || "",
+                    element.getAttribute("data-route") || "",
+                    role
+                ].join(" ").toLowerCase();
+            }
+
+            function isPageRootCandidate(element) {
+                if (!element || element === document.body || element === document.documentElement || !isElementVisible(element)) {
+                    return false;
+                }
+                if (overlayRootForElement(element)) {
+                    return false;
+                }
+                const role = (element.getAttribute("role") || "").toLowerCase();
+                const name = rootNameForElement(element);
+                const isSemanticRoot = element.tagName === "MAIN" || element.tagName === "SECTION" || element.tagName === "ARTICLE" || role === "main";
+                const isNamedRoot = /(^|[\s_-])(page|screen|view|route|scene|panel|content|detail|list|home|dashboard)([\s_-]|$)/.test(name);
+                return isSemanticRoot || isNamedRoot;
+            }
+
+            function pageRootScore(element) {
+                const name = rootNameForElement(element);
+                let score = 0;
+                if (/(^|[\s_-])(active|current|selected|show|open)([\s_-]|$)/.test(name)) {
+                    score += 80;
+                }
+                if (/(^|[\s_-])(page|screen|view|route|scene|panel)([\s_-]|$)/.test(name)) {
+                    score += 45;
+                }
+                if (/(^|[\s_-])(content|detail|list|home|dashboard)([\s_-]|$)/.test(name)) {
+                    score += 25;
+                }
+                const role = (element.getAttribute("role") || "").toLowerCase();
+                if (element.tagName === "MAIN" || role === "main") {
+                    score += 30;
+                }
+                if (element.tagName === "SECTION" || element.tagName === "ARTICLE") {
+                    score += 15;
+                }
+                const fingerprint = visibleTextFingerprint(element);
+                if (fingerprint) {
+                    score += 5;
+                }
+                const rect = element.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                    const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+                    const areaRatio = Math.min(1, (rect.width * rect.height) / viewportArea);
+                    score += Math.round(areaRatio * 10);
+                }
+                return score;
+            }
+
+            function activePageRoot() {
+                const selectors = [
+                    "main", "section", "article", "[role='main']",
+                    "[data-page]", "[data-screen]", "[data-view]", "[data-route]",
+                    "[id*='page']", "[class*='page']",
+                    "[id*='screen']", "[class*='screen']",
+                    "[id*='view']", "[class*='view']",
+                    "[id*='route']", "[class*='route']",
+                    "[id*='scene']", "[class*='scene']",
+                    "[id*='panel']", "[class*='panel']",
+                    "[id*='content']", "[class*='content']",
+                    "[id*='detail']", "[class*='detail']",
+                    "[id*='list']", "[class*='list']",
+                    "[id*='home']", "[class*='home']",
+                    "[id*='dashboard']", "[class*='dashboard']"
+                ].join(",");
+                let best = null;
+                let bestScore = -1;
+                let nodes = [];
+                try {
+                    nodes = Array.from(document.querySelectorAll(selectors));
+                } catch (error) {
+                    nodes = [];
+                }
+                nodes.forEach(function (node) {
+                    if (!isPageRootCandidate(node)) {
+                        return;
+                    }
+                    const score = pageRootScore(node);
+                    if (score > bestScore) {
+                        best = node;
+                        bestScore = score;
+                    }
+                });
+                return best;
+            }
+
+            function hasFixedAncestor(element) {
+                let node = element;
+                while (node && node.nodeType === 1 && node !== document.documentElement) {
+                    if (window.getComputedStyle(node).position === "fixed") {
+                        return true;
+                    }
+                    node = node.parentElement;
+                }
+                return false;
+            }
+
+            function hasStrongPageIdentity(root, path) {
+                if (!root || !path || root === document.body || root === document.documentElement) {
+                    return false;
+                }
+                if (root.getAttribute("data-page") || root.getAttribute("data-screen") || root.getAttribute("data-view") || root.getAttribute("data-route")) {
+                    return true;
+                }
+                const id = (root.id || "").toLowerCase();
+                return /(^|[\s_-])(page|screen|view|route|scene|panel|step)([\s_-]|\d|$)/.test(id);
+            }
+
             function pageRootForElement(element) {
-                if (!element || element === document.documentElement) {
-                    return document.body || document.documentElement;
+                const ambientRoot = activePageRoot();
+                if (!element || element === document.body || element === document.documentElement) {
+                    return ambientRoot || document.body || document.documentElement;
                 }
                 const overlay = overlayRootForElement(element);
                 if (overlay) {
                     return overlay;
+                }
+                if (ambientRoot && element.contains && element.contains(ambientRoot)) {
+                    return ambientRoot;
+                }
+                if (hasFixedAncestor(element) && ambientRoot) {
+                    return ambientRoot;
+                }
+                if (!element || element === document.documentElement) {
+                    return document.body || document.documentElement;
                 }
                 let candidate = null;
                 let node = element;
@@ -1844,20 +2040,16 @@
                 if (!root || !isElementVisible(root)) {
                     return false;
                 }
-                if (!context.local) {
-                    const currentRootFingerprint = visibleTextFingerprint(root);
-                    if (context.rootFingerprint && currentRootFingerprint && context.rootFingerprint !== currentRootFingerprint) {
-                        return false;
-                    }
+                const currentRootFingerprint = visibleTextFingerprint(root);
+                if (!hasStrongPageIdentity(root, context.rootPath) && context.rootFingerprint && currentRootFingerprint && context.rootFingerprint !== currentRootFingerprint) {
+                    return false;
                 }
-                if (context.local) {
+                if (context.local && context.local.path) {
                     let localRoot = null;
-                    if (context.local.path) {
-                        try {
-                            localRoot = document.querySelector(context.local.path);
-                        } catch (error) {
-                            localRoot = null;
-                        }
+                    try {
+                        localRoot = document.querySelector(context.local.path);
+                    } catch (error) {
+                        localRoot = null;
                     }
                     if (!localRoot || !isElementVisible(localRoot)) {
                         return false;
@@ -1871,7 +2063,7 @@
             }
 
             function elementAtNote(note) {
-                const point = viewportPoint(note);
+                const point = hitTestPoint(note);
                 if (point.x < 0 || point.y < 0 || point.x > window.innerWidth || point.y > window.innerHeight) {
                     return null;
                 }
@@ -1893,28 +2085,41 @@
             }
 
             function isCovered(note) {
+                if (note.anchorPath) {
+                    if (!pageContextMatches(note.pageContext)) {
+                        return true;
+                    }
+                    const layout = noteLayout(note);
+                    const source = layout.source;
+                    if (!source || !isElementVisible(source)) {
+                        return true;
+                    }
+                    const top = elementAtNote(note);
+                    if (!top) {
+                        return false;
+                    }
+                    if (top === source || source.contains(top) || top.contains(source)) {
+                        return false;
+                    }
+                    const topOverlay = overlayRootForElement(top);
+                    const sourceOverlay = overlayRootForElement(source);
+                    return Boolean(topOverlay && topOverlay !== sourceOverlay);
+                }
                 if (!pageContextMatches(note.pageContext)) {
-                    return true;
-                }
-                if (!note.anchorPath) {
-                    return false;
-                }
-                const layout = noteLayout(note);
-                const source = layout.source;
-                if (!source || !isElementVisible(source)) {
                     return true;
                 }
                 const top = elementAtNote(note);
                 if (!top) {
                     return false;
                 }
-                if (top === source || source.contains(top) || top.contains(source)) {
-                    return false;
+                const topOverlay = overlayRootForElement(top);
+                const expectedOverlay = note.pageContext && Object.prototype.hasOwnProperty.call(note.pageContext, "overlay")
+                    ? note.pageContext.overlay
+                    : null;
+                if (!expectedOverlay) {
+                    return Boolean(topOverlay);
                 }
-                if (isOverlayCandidate(top)) {
-                    return true;
-                }
-                return false;
+                return Boolean(topOverlay && expectedOverlay.path && cssPathForElement(topOverlay) !== expectedOverlay.path);
             }
 
             function place(node, note, isPoint) {
@@ -1932,13 +2137,9 @@
                 if (entry.box) {
                     place(entry.box, entry.note, false);
                     const layout = noteLayout(entry.note);
-                    const storedRect = entry.note.anchorRect || {};
-                    const storedWidth = Number(storedRect.width);
-                    const storedHeight = Number(storedRect.height);
-                    const scaleX = storedWidth > 0 && layout.sourceRect ? layout.sourceRect.width / storedWidth : 1;
-                    const scaleY = storedHeight > 0 && layout.sourceRect ? layout.sourceRect.height / storedHeight : 1;
-                    entry.box.style.width = Math.max(0, Number(entry.note.width || 0) * scaleX) + "px";
-                    entry.box.style.height = Math.max(0, Number(entry.note.height || 0) * scaleY) + "px";
+                    const size = noteBoxSize(entry.note, layout);
+                    entry.box.style.width = size.width + "px";
+                    entry.box.style.height = size.height + "px";
                 }
             }
 
@@ -2134,6 +2335,25 @@
             return false;
         }
 
+        function shouldAnchorToElement(element, rect, doc, win) {
+            if (!element || !rect || element === doc.body || element === doc.documentElement) {
+                return false;
+            }
+            if (!rect.width || !rect.height) {
+                return false;
+            }
+            if (overlayRootForElement(element, doc, win) || win.getComputedStyle(element).position === "fixed") {
+                return true;
+            }
+            const viewportArea = Math.max(1, win.innerWidth * win.innerHeight);
+            const areaRatio = (rect.width * rect.height) / viewportArea;
+            const fillsViewport = rect.width >= win.innerWidth * 0.82 && rect.height >= win.innerHeight * 0.5;
+            if (areaRatio > 0.55 || fillsViewport) {
+                return false;
+            }
+            return true;
+        }
+
         function cssPathForElement(element, doc) {
             if (!element || element === doc.body || element === doc.documentElement) {
                 return "";
@@ -2232,12 +2452,18 @@
         }
 
         function localContextForElement(element, pageRoot, doc, win) {
-            if (!element || !pageRoot) {
+            if (!element || !pageRoot || element === doc.body || element === doc.documentElement) {
+                return null;
+            }
+            if (element === pageRoot || (element.contains && element.contains(pageRoot))) {
+                return null;
+            }
+            if (!pageRoot.contains(element) && hasFixedAncestor(element, doc, win)) {
                 return null;
             }
             let node = element;
             let best = element;
-            while (node && node.nodeType === 1 && node !== doc.documentElement) {
+            while (node && node.nodeType === 1 && node !== doc.body && node !== doc.documentElement) {
                 if (node === pageRoot) {
                     break;
                 }
@@ -2246,9 +2472,13 @@
                 }
                 node = node.parentElement;
             }
+            const path = cssPathForElement(best, doc);
+            if (!path) {
+                return null;
+            }
             const fingerprint = visibleTextFingerprint(best, doc, win);
             return fingerprint ? {
-                path: cssPathForElement(best, doc),
+                path,
                 fingerprint
             } : null;
         }
@@ -2257,25 +2487,32 @@
             if (!element || element === doc.body || element === doc.documentElement) {
                 return false;
             }
-            const style = win.getComputedStyle(element);
             const role = (element.getAttribute("role") || "").toLowerCase();
+            const className = typeof element.className === "string" ? element.className : (element.getAttribute("class") || "");
             const name = [
                 element.id || "",
-                element.className || "",
+                className,
                 role,
                 element.getAttribute("aria-label") || "",
                 element.getAttribute("data-state") || ""
             ].join(" ").toLowerCase();
-            const zIndex = Number.parseInt(style.zIndex, 10);
-            const rect = element.getBoundingClientRect();
-            const isOverlayName = /(^|[\s_])(modal|dialog|drawer|popup|popover|overlay|mask|shade|sheet|layer|toast|tooltip|dropdown|backdrop|scrim)(-|[\s_]|$)/.test(name);
-            const isOverlayRole = /dialog|alertdialog|menu|listbox/.test(role);
-            const isOverlayPosition = (style.position === "fixed" || style.position === "absolute" || style.position === "sticky") &&
-                Number.isFinite(zIndex) &&
-                zIndex >= 20 &&
-                rect.width >= win.innerWidth * 0.18 &&
-                rect.height >= win.innerHeight * 0.14;
-            return element.tagName === "DIALOG" || element.getAttribute("aria-modal") === "true" || element.hasAttribute("popover") || isOverlayName || isOverlayRole || isOverlayPosition;
+            const isOverlayName = /(^|[\s_-])(modal|dialog|drawer|popup|popover|dropdown|backdrop|scrim|mask|sheet)([\s_-]|$)/.test(name);
+            const isFloatingMenuName = /(^|[\s_-])(menu|listbox)([\s_-]|$)/.test(name);
+            const isGenericOverlayName = /(^|[\s_-])(overlay|shade|ov)([\s_-]|$)/.test(name);
+            const isOverlayRole = ["dialog", "alertdialog", "menu", "listbox"].includes(role);
+            if (element.tagName === "DIALOG" || element.getAttribute("aria-modal") === "true" || element.hasAttribute("popover") || isOverlayName || isOverlayRole) {
+                return true;
+            }
+            if (isGenericOverlayName || isFloatingMenuName) {
+                const style = win.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return (style.position === "fixed" || style.position === "absolute" || style.position === "sticky") &&
+                    (isFloatingMenuName || (
+                        rect.width >= win.innerWidth * 0.5 &&
+                        rect.height >= win.innerHeight * 0.5
+                    ));
+            }
+            return false;
         }
 
         function overlayRootForElement(element, doc, win) {
@@ -2309,7 +2546,6 @@
                     if (!element) continue;
                     const root = overlayRootForElement(element, doc, win);
                     if (root && isElementVisible(root, doc, win)) {
-                        console.log("[DEBUG] currentOverlayRoot FOUND overlay at point", point, "element:", root.tagName, root.className, root.id, "computed z-index:", win.getComputedStyle(root).zIndex, "position:", win.getComputedStyle(root).position);
                         return root;
                     }
                 }
@@ -2335,6 +2571,22 @@
             return overlayContextForRoot(currentOverlayRoot(doc, win), doc, win);
         }
 
+        function overlayContextFromPath(context, doc, win) {
+            if (!context || !context.path) {
+                return null;
+            }
+            let root = null;
+            try {
+                root = doc.querySelector(context.path);
+            } catch (error) {
+                root = null;
+            }
+            if (!root || !isOverlayCandidate(root, doc, win) || !isElementVisible(root, doc, win)) {
+                return null;
+            }
+            return overlayContextForRoot(root, doc, win);
+        }
+
         function overlayContextMatches(expected, current) {
             if (!expected) {
                 return !current;
@@ -2349,13 +2601,21 @@
         }
 
         function pageContextOverlayMatches(context, doc, win) {
-            const current = currentOverlayContext(doc, win);
             if (!context) {
-                return !current;
+                return !currentOverlayContext(doc, win);
             }
             if (Object.prototype.hasOwnProperty.call(context, "overlay")) {
-                return overlayContextMatches(context.overlay || null, current);
+                const expected = context.overlay || null;
+                if (!expected) {
+                    return !currentOverlayContext(doc, win);
+                }
+                const direct = overlayContextFromPath(expected, doc, win);
+                if (direct && overlayContextMatches(expected, direct)) {
+                    return true;
+                }
+                return overlayContextMatches(expected, currentOverlayContext(doc, win));
             }
+            const current = currentOverlayContext(doc, win);
             if (!current) {
                 return true;
             }
@@ -2365,13 +2625,144 @@
             }, current);
         }
 
+        function rootNameForElement(element) {
+            if (!element) {
+                return "";
+            }
+            const role = (element.getAttribute("role") || "").toLowerCase();
+            return [
+                element.id || "",
+                typeof element.className === "string" ? element.className : (element.getAttribute("class") || ""),
+                element.getAttribute("data-page") || "",
+                element.getAttribute("data-screen") || "",
+                element.getAttribute("data-view") || "",
+                element.getAttribute("data-route") || "",
+                role
+            ].join(" ").toLowerCase();
+        }
+
+        function isPageRootCandidate(element, doc, win) {
+            if (!element || element === doc.body || element === doc.documentElement || !isElementVisible(element, doc, win)) {
+                return false;
+            }
+            if (overlayRootForElement(element, doc, win)) {
+                return false;
+            }
+            const role = (element.getAttribute("role") || "").toLowerCase();
+            const name = rootNameForElement(element);
+            const isSemanticRoot = element.tagName === "MAIN" || element.tagName === "SECTION" || element.tagName === "ARTICLE" || role === "main";
+            const isNamedRoot = /(^|[\s_-])(page|screen|view|route|scene|panel|content|detail|list|home|dashboard)([\s_-]|$)/.test(name);
+            return isSemanticRoot || isNamedRoot;
+        }
+
+        function pageRootScore(element, doc, win) {
+            const name = rootNameForElement(element);
+            let score = 0;
+            if (/(^|[\s_-])(active|current|selected|show|open)([\s_-]|$)/.test(name)) {
+                score += 80;
+            }
+            if (/(^|[\s_-])(page|screen|view|route|scene|panel)([\s_-]|$)/.test(name)) {
+                score += 45;
+            }
+            if (/(^|[\s_-])(content|detail|list|home|dashboard)([\s_-]|$)/.test(name)) {
+                score += 25;
+            }
+            const role = (element.getAttribute("role") || "").toLowerCase();
+            if (element.tagName === "MAIN" || role === "main") {
+                score += 30;
+            }
+            if (element.tagName === "SECTION" || element.tagName === "ARTICLE") {
+                score += 15;
+            }
+            const fingerprint = visibleTextFingerprint(element, doc, win);
+            if (fingerprint) {
+                score += 5;
+            }
+            const rect = element.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+                const viewportArea = Math.max(1, win.innerWidth * win.innerHeight);
+                const areaRatio = Math.min(1, (rect.width * rect.height) / viewportArea);
+                score += Math.round(areaRatio * 10);
+            }
+            return score;
+        }
+
+        function activePageRoot(doc, win) {
+            const selectors = [
+                "main", "section", "article", "[role='main']",
+                "[data-page]", "[data-screen]", "[data-view]", "[data-route]",
+                "[id*='page']", "[class*='page']",
+                "[id*='screen']", "[class*='screen']",
+                "[id*='view']", "[class*='view']",
+                "[id*='route']", "[class*='route']",
+                "[id*='scene']", "[class*='scene']",
+                "[id*='panel']", "[class*='panel']",
+                "[id*='content']", "[class*='content']",
+                "[id*='detail']", "[class*='detail']",
+                "[id*='list']", "[class*='list']",
+                "[id*='home']", "[class*='home']",
+                "[id*='dashboard']", "[class*='dashboard']"
+            ].join(",");
+            let best = null;
+            let bestScore = -1;
+            let nodes = [];
+            try {
+                nodes = Array.from(doc.querySelectorAll(selectors));
+            } catch (error) {
+                nodes = [];
+            }
+            nodes.forEach(node => {
+                if (!isPageRootCandidate(node, doc, win)) {
+                    return;
+                }
+                const score = pageRootScore(node, doc, win);
+                if (score > bestScore) {
+                    best = node;
+                    bestScore = score;
+                }
+            });
+            return best;
+        }
+
+        function hasFixedAncestor(element, doc, win) {
+            let node = element;
+            while (node && node.nodeType === 1 && node !== doc.documentElement) {
+                if (win.getComputedStyle(node).position === "fixed") {
+                    return true;
+                }
+                node = node.parentElement;
+            }
+            return false;
+        }
+
+        function hasStrongPageIdentity(root, path, doc) {
+            if (!root || !path || root === doc.body || root === doc.documentElement) {
+                return false;
+            }
+            if (root.getAttribute("data-page") || root.getAttribute("data-screen") || root.getAttribute("data-view") || root.getAttribute("data-route")) {
+                return true;
+            }
+            const id = (root.id || "").toLowerCase();
+            return /(^|[\s_-])(page|screen|view|route|scene|panel|step)([\s_-]|\d|$)/.test(id);
+        }
+
         function pageRootForElement(element, doc, win) {
-            if (!element || element === doc.documentElement) {
-                return doc.body || doc.documentElement;
+            const ambientRoot = activePageRoot(doc, win);
+            if (!element || element === doc.body || element === doc.documentElement) {
+                return ambientRoot || doc.body || doc.documentElement;
             }
             const overlay = overlayRootForElement(element, doc, win);
             if (overlay) {
                 return overlay;
+            }
+            if (ambientRoot && element.contains && element.contains(ambientRoot)) {
+                return ambientRoot;
+            }
+            if (hasFixedAncestor(element, doc, win) && ambientRoot) {
+                return ambientRoot;
+            }
+            if (!element || element === doc.documentElement) {
+                return doc.body || doc.documentElement;
             }
             let candidate = null;
             let node = element;
@@ -2418,19 +2809,15 @@
             const doc = els.frame.contentDocument;
             const win = getFrameWindow();
             if (!doc || !win) {
-                console.log("[DEBUG] pageContextMatches: doc or win null, returning true");
                 return true;
             }
             if (!context) {
-                console.log("[DEBUG] pageContextMatches: context null, checking overlay");
                 return pageContextOverlayMatches(context, doc, win);
             }
             if (context.route && context.route !== frameRouteKey(doc, win)) {
-                console.log("[DEBUG] pageContextMatches: ROUTE mismatch, context.route=", context.route, "current=", frameRouteKey(doc, win));
                 return false;
             }
             if (!pageContextOverlayMatches(context, doc, win)) {
-                console.log("[DEBUG] pageContextMatches: OVERLAY mismatch");
                 return false;
             }
             let root = doc.body || doc.documentElement;
@@ -2442,46 +2829,33 @@
                 }
             }
             if (!root) {
-                console.log("[DEBUG] pageContextMatches: ROOT not found, rootPath=", context.rootPath);
                 return false;
             }
             if (!isElementVisible(root, doc, win)) {
-                console.log("[DEBUG] pageContextMatches: ROOT not visible, rootPath=", context.rootPath);
                 return false;
             }
-            if (!context.local) {
-                const currentRootFingerprint = visibleTextFingerprint(root, doc, win);
-                if (context.rootFingerprint && currentRootFingerprint && context.rootFingerprint !== currentRootFingerprint) {
-                    console.log("[DEBUG] pageContextMatches: ROOT FINGERPRINT mismatch, stored=", context.rootFingerprint, "current=", currentRootFingerprint);
-                    return false;
-                }
+            const currentRootFingerprint = visibleTextFingerprint(root, doc, win);
+            if (!hasStrongPageIdentity(root, context.rootPath, doc) && context.rootFingerprint && currentRootFingerprint && context.rootFingerprint !== currentRootFingerprint) {
+                return false;
             }
-            if (context.local) {
+            if (context.local && context.local.path) {
                 let localRoot = null;
-                if (context.local.path) {
-                    try {
-                        localRoot = doc.querySelector(context.local.path);
-                    } catch (error) {
-                        localRoot = null;
-                        console.log("[DEBUG] pageContextMatches: querySelector THREW for local path:", context.local.path, error);
-                    }
+                try {
+                    localRoot = doc.querySelector(context.local.path);
+                } catch (error) {
+                    localRoot = null;
                 }
                 if (!localRoot) {
-                    console.log("[DEBUG] pageContextMatches: LOCAL ROOT not found, path=", context.local.path);
                     return false;
                 }
                 if (!isElementVisible(localRoot, doc, win)) {
-                    console.log("[DEBUG] pageContextMatches: LOCAL ROOT not visible, path=", context.local.path);
                     return false;
                 }
                 const currentLocalFingerprint = visibleTextFingerprint(localRoot, doc, win);
-                console.log("[DEBUG] pageContextMatches: LOCAL check, stored=", context.local.fingerprint, "current=", currentLocalFingerprint, "path=", context.local.path);
                 if (context.local.fingerprint && currentLocalFingerprint && context.local.fingerprint !== currentLocalFingerprint) {
-                    console.log("[DEBUG] pageContextMatches: LOCAL FINGERPRINT MISMATCH!");
                     return false;
                 }
             }
-            console.log("[DEBUG] pageContextMatches: ALL CHECKS PASSED, returning true");
             return true;
         }
 
@@ -2494,11 +2868,12 @@
             const element = doc.elementFromPoint(point.x, point.y);
             const rect = element ? element.getBoundingClientRect() : null;
             const floating = isFloatingPoint(point);
+            const anchorable = shouldAnchorToElement(element, rect, doc, win);
             return {
-                anchorPath: cssPathForElement(element, doc),
+                anchorPath: anchorable ? cssPathForElement(element, doc) : "",
                 surfaceKey: surfaceKeyForElement(element, doc, win),
                 pageContext: pageContextForElement(element, doc, win),
-                anchorRect: rect ? {
+                anchorRect: anchorable && rect ? {
                     left: rect.left + (floating ? 0 : win.scrollX),
                     top: rect.top + (floating ? 0 : win.scrollY),
                     width: rect.width,
@@ -2514,9 +2889,12 @@
             const point = viewportPoint(event);
             const mode = positionMode || (isFloatingPoint(point) ? "viewport" : "document");
             const context = annotationContextAtPoint(point);
+            const win = getFrameWindow();
+            const scrollX = win ? (win.scrollX || 0) : state.scrollX;
+            const scrollY = win ? (win.scrollY || 0) : state.scrollY;
             return {
-                x: point.x + (mode === "viewport" ? 0 : state.scrollX),
-                y: point.y + (mode === "viewport" ? 0 : state.scrollY),
+                x: point.x + (mode === "viewport" ? 0 : scrollX),
+                y: point.y + (mode === "viewport" ? 0 : scrollY),
                 positionMode: mode,
                 anchorPath: context.anchorPath,
                 surfaceKey: context.surfaceKey,
@@ -2545,6 +2923,9 @@
                 surfaceKey: start.surfaceKey || "",
                 pageContext: start.pageContext || null,
                 anchorRect: start.anchorRect || null,
+                anchorRectMode: start.anchorRectMode || positionMode,
+                anchorScrollX: start.anchorScrollX || 0,
+                anchorScrollY: start.anchorScrollY || 0,
                 x: moved ? Math.min(start.x, end.x) : end.x,
                 y: moved ? Math.min(start.y, end.y) : end.y,
                 width: moved ? Math.max(24, Math.abs(dx)) : 0,
@@ -2614,11 +2995,19 @@
                 return;
             }
             const win = getFrameWindow();
-            if (!win) {
+            const doc = els.frame.contentDocument;
+            if (!win || !doc) {
                 return;
             }
             event.preventDefault();
-            win.scrollBy({ left: event.deltaX, top: event.deltaY, behavior: "auto" });
+            const point = viewportPoint(event);
+            const target = scrollTargetAtPoint(point, event.deltaX, event.deltaY);
+            if (target) {
+                target.scrollLeft += event.deltaX;
+                target.scrollTop += event.deltaY;
+            } else {
+                win.scrollBy({ left: event.deltaX, top: event.deltaY, behavior: "auto" });
+            }
             requestAnimationFrame(updateScrollState);
         }
 
@@ -2634,6 +3023,12 @@
             const annotation = state.annotations.find(item => item.id === id);
             const win = getFrameWindow();
             if (!annotation || !win) {
+                return;
+            }
+            const source = sourceElementForAnnotation(annotation);
+            if (source) {
+                source.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+                setTimeout(updateScrollState, 260);
                 return;
             }
             const targetX = Math.max(0, annotation.x - 120);
@@ -2702,11 +3097,114 @@
         }
 
         function screenX(annotation) {
-            return annotation.x - (annotation.positionMode === "viewport" ? 0 : state.scrollX);
+            return annotationLayout(annotation).viewportX;
         }
 
         function screenY(annotation) {
-            return annotation.y - (annotation.positionMode === "viewport" ? 0 : state.scrollY);
+            return annotationLayout(annotation).viewportY;
+        }
+
+        function annotationLayout(annotation) {
+            const doc = els.frame.contentDocument;
+            const win = getFrameWindow();
+            const scrollX = win ? (win.scrollX || 0) : state.scrollX;
+            const scrollY = win ? (win.scrollY || 0) : state.scrollY;
+            const x = Number(annotation.x || 0);
+            const y = Number(annotation.y || 0);
+            const fallback = {
+                docX: x,
+                docY: y,
+                viewportX: x - (annotation.positionMode === "viewport" ? 0 : scrollX),
+                viewportY: y - (annotation.positionMode === "viewport" ? 0 : scrollY),
+                source: null,
+                sourceRect: null
+            };
+            if (!doc || !win || !annotation.anchorPath) {
+                return fallback;
+            }
+
+            const source = sourceElementForAnnotation(annotation);
+            if (!source) {
+                return fallback;
+            }
+
+            const rect = source.getBoundingClientRect();
+            const storedRect = annotation.anchorRect || {};
+            const storedLeft = Number(storedRect.left);
+            const storedTop = Number(storedRect.top);
+            const storedWidth = Number(storedRect.width);
+            const storedHeight = Number(storedRect.height);
+            const validStored = Number.isFinite(storedLeft) && Number.isFinite(storedTop) && storedWidth > 0 && storedHeight > 0;
+            const relX = validStored ? (x - storedLeft) / storedWidth : 0.5;
+            const relY = validStored ? (y - storedTop) / storedHeight : 0.5;
+            const layoutX = annotation.shape === "rect" ? relX : clamp(relX, 0, 1);
+            const layoutY = annotation.shape === "rect" ? relY : clamp(relY, 0, 1);
+            const viewportX = rect.left + rect.width * layoutX;
+            const viewportY = rect.top + rect.height * layoutY;
+
+            return {
+                docX: viewportX + (annotation.positionMode === "viewport" ? 0 : scrollX),
+                docY: viewportY + (annotation.positionMode === "viewport" ? 0 : scrollY),
+                viewportX,
+                viewportY,
+                source,
+                sourceRect: rect
+            };
+        }
+
+        function annotationBoxSize(annotation, layout) {
+            const storedRect = annotation.anchorRect || {};
+            const storedWidth = Number(storedRect.width);
+            const storedHeight = Number(storedRect.height);
+            const scaleX = storedWidth > 0 && layout.sourceRect ? layout.sourceRect.width / storedWidth : 1;
+            const scaleY = storedHeight > 0 && layout.sourceRect ? layout.sourceRect.height / storedHeight : 1;
+            return {
+                width: Math.max(0, Number(annotation.width || 0) * scaleX),
+                height: Math.max(0, Number(annotation.height || 0) * scaleY)
+            };
+        }
+
+        function annotationHitTestPoint(annotation) {
+            const layout = annotationLayout(annotation);
+            const point = { x: layout.viewportX, y: layout.viewportY };
+            if (annotation.shape === "rect") {
+                const size = annotationBoxSize(annotation, layout);
+                point.x += size.width / 2;
+                point.y += size.height / 2;
+            }
+            return point;
+        }
+
+        function canScrollElement(element, deltaX, deltaY, doc, win) {
+            if (!element || element.nodeType !== 1 || element === doc.body || element === doc.documentElement) {
+                return false;
+            }
+            const style = win.getComputedStyle(element);
+            const canY = Math.abs(deltaY) > Math.abs(deltaX) &&
+                /(auto|scroll|overlay)/.test(style.overflowY) &&
+                element.scrollHeight > element.clientHeight + 1 &&
+                ((deltaY > 0 && element.scrollTop < element.scrollHeight - element.clientHeight - 1) || (deltaY < 0 && element.scrollTop > 1));
+            const canX = Math.abs(deltaX) >= Math.abs(deltaY) &&
+                /(auto|scroll|overlay)/.test(style.overflowX) &&
+                element.scrollWidth > element.clientWidth + 1 &&
+                ((deltaX > 0 && element.scrollLeft < element.scrollWidth - element.clientWidth - 1) || (deltaX < 0 && element.scrollLeft > 1));
+            return canY || canX;
+        }
+
+        function scrollTargetAtPoint(point, deltaX, deltaY) {
+            const doc = els.frame.contentDocument;
+            const win = getFrameWindow();
+            if (!doc || !win) {
+                return null;
+            }
+            let node = doc.elementFromPoint(point.x, point.y);
+            while (node && node !== doc.documentElement) {
+                if (canScrollElement(node, deltaX, deltaY, doc, win)) {
+                    return node;
+                }
+                node = node.parentElement;
+            }
+            return null;
         }
 
         function sourceElementForAnnotation(annotation) {
@@ -2727,78 +3225,76 @@
             if (!doc || !win) {
                 return "";
             }
-            const x = screenX(annotation);
-            const y = screenY(annotation);
+            const point = annotationHitTestPoint(annotation);
             const layerRect = els.layer.getBoundingClientRect();
-            if (x < 0 || y < 0 || x > layerRect.width || y > layerRect.height) {
+            if (point.x < 0 || point.y < 0 || point.x > layerRect.width || point.y > layerRect.height) {
                 return annotation.surfaceKey || "";
             }
-            const element = doc.elementFromPoint(x, y);
+            const element = doc.elementFromPoint(point.x, point.y);
             return surfaceKeyForElement(element, doc, win);
         }
 
         function isAnnotationHidden(annotation) {
             const doc = els.frame.contentDocument;
-            if (!doc) {
-                console.log("[DEBUG] isAnnotationHidden: doc is null, returning false");
+            const win = getFrameWindow();
+            if (!doc || !win) {
                 return false;
             }
-            if (!pageContextMatches(annotation)) {
-                console.log("[DEBUG] isAnnotationHidden: pageContextMatches FAILED for", annotation.title, annotation.anchorPath, "pageContext:", JSON.stringify(annotation.pageContext));
-                return true;
-            }
-            const x = screenX(annotation);
-            const y = screenY(annotation);
+            const point = annotationHitTestPoint(annotation);
             const layerRect = els.layer.getBoundingClientRect();
-            if (x < 0 || y < 0 || x > layerRect.width || y > layerRect.height) {
-                console.log("[DEBUG] isAnnotationHidden: out of bounds, x=", x, "y=", y, "layerW=", layerRect.width, "layerH=", layerRect.height, "returning false");
+            if (point.x < 0 || point.y < 0 || point.x > layerRect.width || point.y > layerRect.height) {
                 return false;
             }
 
             if (annotation.anchorPath) {
-                const source = sourceElementForAnnotation(annotation);
-                const win = getFrameWindow();
-                if (!source) {
-                    console.log("[DEBUG] isAnnotationHidden: sourceElement NOT FOUND for anchorPath:", annotation.anchorPath);
+                if (!pageContextMatches(annotation)) {
                     return true;
                 }
-                if (!win) {
-                    console.log("[DEBUG] isAnnotationHidden: getFrameWindow returned null");
+                const source = sourceElementForAnnotation(annotation);
+                if (!source) {
                     return true;
                 }
                 if (!isElementVisible(source, doc, win)) {
-                    console.log("[DEBUG] isAnnotationHidden: source NOT VISIBLE for", annotation.anchorPath);
                     return true;
                 }
-                const top = doc.elementFromPoint(x, y);
+                const top = doc.elementFromPoint(point.x, point.y);
                 if (!top) {
-                    console.log("[DEBUG] isAnnotationHidden: elementFromPoint returned null at", x, y, "returning false");
                     return false;
                 }
                 if (top === source || source.contains(top) || top.contains(source)) {
-                    console.log("[DEBUG] isAnnotationHidden: NOT hidden, top matches source for", annotation.title);
                     return false;
                 }
-                if (isOverlayCandidate(top, doc, win)) {
-                    console.log("[DEBUG] isAnnotationHidden: HIDDEN by overlay, top element:", top.tagName, top.className);
-                    return true;
-                }
-                console.log("[DEBUG] isAnnotationHidden: NOT hidden, fallthrough for", annotation.title, "top:", top.tagName, top.className);
-                return false;
+                const topOverlay = overlayRootForElement(top, doc, win);
+                const sourceOverlay = overlayRootForElement(source, doc, win);
+                return Boolean(topOverlay && topOverlay !== sourceOverlay);
             }
 
-            console.log("[DEBUG] isAnnotationHidden: no anchorPath, returning false");
-            return false;
+            if (!pageContextMatches(annotation)) {
+                return true;
+            }
+            const top = doc.elementFromPoint(point.x, point.y);
+            if (!top) {
+                return false;
+            }
+            const topOverlay = overlayRootForElement(top, doc, win);
+            const expectedOverlay = annotation.pageContext && Object.prototype.hasOwnProperty.call(annotation.pageContext, "overlay")
+                ? annotation.pageContext.overlay
+                : null;
+            if (!expectedOverlay) {
+                return Boolean(topOverlay);
+            }
+            return Boolean(topOverlay && expectedOverlay.path && cssPathForElement(topOverlay, doc) !== expectedOverlay.path);
         }
 
         function renderPointAnnotation(annotation, index) {
             const marker = document.createElement("button");
+            const layout = annotationLayout(annotation);
             marker.type = "button";
             marker.className = "marker" + (annotation.id === state.selectedId ? " selected" : "") + (isAnnotationHidden(annotation) ? " annotation-hidden" : "");
             marker.textContent = index + 1;
             marker.title = annotation.title || "未命名标注";
-            marker.style.left = screenX(annotation) + "px";
-            marker.style.top = screenY(annotation) + "px";
+            marker.style.left = layout.viewportX + "px";
+            marker.style.top = layout.viewportY + "px";
             marker.addEventListener("click", event => {
                 if (state._justCreated) return;
                 event.stopPropagation();
@@ -2809,13 +3305,15 @@
 
         function renderRectAnnotation(annotation, index) {
             const box = document.createElement("button");
+            const layout = annotationLayout(annotation);
+            const size = annotationBoxSize(annotation, layout);
             box.type = "button";
             box.className = "box-marker" + (annotation.id === state.selectedId ? " selected" : "") + (isAnnotationHidden(annotation) ? " annotation-hidden" : "");
             box.title = annotation.title || "未命名标注";
-            box.style.left = screenX(annotation) + "px";
-            box.style.top = screenY(annotation) + "px";
-            box.style.width = annotation.width + "px";
-            box.style.height = annotation.height + "px";
+            box.style.left = layout.viewportX + "px";
+            box.style.top = layout.viewportY + "px";
+            box.style.width = size.width + "px";
+            box.style.height = size.height + "px";
             box.addEventListener("click", event => {
                 if (state._justCreated) return;
                 event.stopPropagation();
