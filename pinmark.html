@@ -1123,6 +1123,37 @@
             }, 220);
         }
 
+        function setFrameHtml(html) {
+            if (state.frameObserver) {
+                state.frameObserver.disconnect();
+                state.frameObserver = null;
+            }
+            state.scrollX = 0;
+            state.scrollY = 0;
+            els.frame.removeAttribute("src");
+            els.frame.srcdoc = "";
+            els.frame.srcdoc = buildFramePreviewHtml(html);
+        }
+
+        function buildFramePreviewHtml(html) {
+            const script = "<scr" + "ipt id=\"pinmark-frame-compat-script\">(function(){try{var rawReplace=history.replaceState.bind(history);var rawPush=history.pushState.bind(history);function normalizeUrl(url){if(typeof url!==\"string\"){return url;}var hashIndex=url.indexOf(\"#\");if(hashIndex>=0){return location.href.split(\"#\")[0]+url.slice(hashIndex);}return url;}history.replaceState=function(state,title,url){return rawReplace(state,title,normalizeUrl(url));};history.pushState=function(state,title,url){return rawPush(state,title,normalizeUrl(url));};}catch(error){}})();<" + "/scr" + "ipt>";
+            return injectIntoHtmlHead(html, "\n" + script + "\n");
+        }
+
+        function injectIntoHtmlHead(html, injection) {
+            const headMatch = html.match(/<head\b[^>]*>/i);
+            if (headMatch) {
+                const idx = headMatch.index + headMatch[0].length;
+                return html.slice(0, idx) + injection + html.slice(idx);
+            }
+            const htmlMatch = html.match(/<html\b[^>]*>/i);
+            if (htmlMatch) {
+                const idx = htmlMatch.index + htmlMatch[0].length;
+                return html.slice(0, idx) + "\n<head>" + injection + "</head>\n" + html.slice(idx);
+            }
+            return injection + html;
+        }
+
         function loadProject(project, message) {
             if (!project || typeof project.html !== "string") {
                 showToast("项目文件格式不正确");
@@ -1134,7 +1165,7 @@
             state.selectedId = state.annotations[0]?.id || null;
             state.scrollX = 0;
             state.scrollY = 0;
-            els.frame.srcdoc = state.html;
+            setFrameHtml(state.html);
             els.emptyState.style.display = "none";
             els.projectName.textContent = state.fileName;
             els.exportHtmlBtn.disabled = false;
@@ -2277,13 +2308,25 @@
 
         function bindFrameScroll() {
             const win = getFrameWindow();
-            const doc = els.frame.contentDocument;
             if (!win) {
                 return;
             }
             if (state.frameObserver) {
                 state.frameObserver.disconnect();
                 state.frameObserver = null;
+            }
+            let doc = null;
+            try {
+                doc = els.frame.contentDocument;
+            } catch (error) {
+                showToast("原型预览加载异常，请检查原型脚本或浏览器限制");
+                renderAnnotations();
+                return;
+            }
+            if (!doc || !doc.documentElement) {
+                showToast("原型预览加载异常，请检查原型脚本或浏览器限制");
+                renderAnnotations();
+                return;
             }
             state.scrollX = win.scrollX || 0;
             state.scrollY = win.scrollY || 0;
