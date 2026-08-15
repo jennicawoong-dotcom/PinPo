@@ -16,7 +16,7 @@
 
 仓库中的 **Pinpo.html** 即为完整的 PinPo 工具，不需要安装依赖或启动服务。
 
-1. 下载 pinmark.html。
+1. 下载 pinpo.html。
 2. 使用 Chrome、Edge、Firefox 或 Safari 等现代浏览器打开。
 3. 点击“导入原型”，选择需要标注的 HTML 文件。
 4. 在“浏览模式”中正常操作原型，进入需要标注的页面和状态。
